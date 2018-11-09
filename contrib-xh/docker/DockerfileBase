@@ -1,0 +1,86 @@
+FROM python:3.6
+
+MAINTAINER Kazeki <kazeki@foxmail.com>
+
+# Add a normal user
+RUN useradd --user-group --create-home --shell /bin/bash work
+
+# Configure environment
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    HOME=/home/work
+
+# configure apt-get
+COPY ./aptget.sources.list /etc/apt/sources.list
+
+# configure pip
+RUN mkdir ~/.pip
+COPY ./pip.conf ~/.pip/pip.conf
+RUN whoami
+# RUN mkdir /home/work/.pip
+# COPY ./pip.conf /home/work/.pip/pip.conf
+
+RUN apt-get update -y
+
+# Install some dependencies
+# http://airbnb.io/superset/installation.html#os-dependencies
+RUN apt-get update -y && apt-get install -y build-essential libssl-dev \
+    libffi-dev python3-dev libsasl2-dev libldap2-dev libxi-dev
+
+RUN apt-get install -y vim less postgresql-client redis-tools
+
+# Install nodejs for custom build
+# https://github.com/apache/incubator-superset/blob/master/docs/installation.rst#making-your-own-build
+# https://nodejs.org/en/download/package-manager/
+# network problem, take local file instead
+# RUN curl -sL https://deb.nodesource.com/setup_8.x | bash -
+COPY ./node_setup_8x.sh /home/work/
+RUN bash /home/work/node_setup_8x.sh
+RUN apt-get install -y nodejs
+# kazeki add --allow-unauthenticated
+RUN curl -sS https://dl.yarnpkg.com/debian/pubkey.gpg | apt-key add -; \
+    echo "deb https://dl.yarnpkg.com/debian/ stable main" | tee /etc/apt/sources.list.d/yarn.list; \
+    apt-get update; \
+    apt-get install -y --allow-unauthenticated yarn
+
+# configure npm
+RUN npm config set registry=https://registry.npm.taobao.org
+
+RUN mkdir $HOME/incubator-superset
+
+WORKDIR $HOME/incubator-superset
+
+COPY ./ ./
+RUN mkdir -p /home/work/.cache
+RUN pip install --upgrade setuptools pip -i https://mirrors.aliyun.com/pypi/simple/
+RUN pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
+RUN pip install -r requirements-dev.txt -i https://mirrors.aliyun.com/pypi/simple/
+RUN pip install -e .
+
+ENV PATH=/home/work/incubator-superset/superset/bin:$PATH \
+    PYTHONPATH=./superset/:$PYTHONPATH
+
+COPY docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+RUN ln -s usr/local/bin/docker-entrypoint.sh /entrypoint.sh # backwards compat
+
+COPY ./superset ./superset
+
+# change directroy owner
+RUN chown -R work:work $HOME
+
+USER work
+
+# configure npm
+RUN yarn config set registry https://registry.npm.taobao.org
+
+USER root
+
+RUN cd superset/assets && yarn install --ignore-scripts
+RUN cd superset/assets && npm run build
+
+HEALTHCHECK CMD ["curl", "-f", "http://localhost:8088/health"]
+
+ENTRYPOINT ["docker-entrypoint.sh"]
+
+EXPOSE 8088
